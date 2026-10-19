@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
   RefreshControl,
+  ActivityIndicator,
   StyleSheet,
   useWindowDimensions
 } from 'react-native';
@@ -16,8 +17,13 @@ import MetricTrendChart from '../../components/MetricTrendChart';
 import BiometricProgressBar from '../../components/BiometricProgressBar';
 import PostureHeatmap, { buildHeatmapSpotsFromAssessment, buildFindingsFromAssessment } from '../../components/PostureHeatmap';
 import { SkeletonBlock, SkeletonCard } from '../../components/Skeleton';
-import { getCoachAthleteOverview, getCoachAthleteProgress } from '../../services/api';
+import { getCoachAthleteOverview, getCoachAthleteProgress, getAssessmentById } from '../../services/api';
 import { buildRiskFactors } from '../../services/riskVisualization';
+import {
+  resolveAssessmentView,
+  heatmapStateForView,
+  PROCESSING_STATUSES
+} from '../../services/assessmentView';
 
 const RISK_COLORS: Record<string, string> = {
   Low: '#009844',
@@ -63,6 +69,39 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // STEP 8: explicitly selected assessment for the Injury Risk section.
+  // Null = latest completed (ships inside the authorized overview payload).
+  // Any other ID is fetched as a full document through the same authorized
+  // per-assessment endpoint athletes use — the backend enforces that the
+  // coach is assigned to this athlete, so nothing unauthorized can load.
+  const [selectedAid, setSelectedAid] = useState<string | null>(null);
+  const [selDoc, setSelDoc] = useState<any>(null);
+  const [selLoading, setSelLoading] = useState(false);
+  const [selError, setSelError] = useState<any | null>(null);
+  const selRequestRef = useRef(0);
+
+  const selectAssessment = useCallback(async (id: string | null) => {
+    const req = ++selRequestRef.current;
+    setSelectedAid(id);
+    setSelDoc(null);
+    setSelError(null);
+    if (id === null) {
+      setSelLoading(false);
+      return;
+    }
+    setSelLoading(true);
+    try {
+      const res = await getAssessmentById(id);
+      if (selRequestRef.current !== req) return;
+      setSelDoc(res?.data ?? null);
+    } catch (e: any) {
+      if (selRequestRef.current !== req) return;
+      setSelDoc(null);
+      setSelError(e);
+    } finally {
+      if (selRequestRef.current === req) setSelLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async (silent: boolean = false) => {
     if (!athleteId) {
@@ -102,6 +141,27 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // A different athlete resets the assessment selection (never carry the
+  // previous athlete's document into the new hero).
+  useEffect(() => {
+    selRequestRef.current++;
+    setSelectedAid(null);
+    setSelDoc(null);
+    setSelError(null);
+    setSelLoading(false);
+  }, [athleteId]);
+
+  // STEP 9: contract builders run once per selected document, declared with
+  // the other unconditional hooks (BEFORE the early returns below, so the
+  // hooks order never changes between renders).
+  const riskDocForBuilders = selectedAid === null ? data?.latestAssessment ?? null : selDoc;
+  const memoFactors = useMemo(() => buildRiskFactors(riskDocForBuilders), [riskDocForBuilders]);
+  const memoSpots = useMemo(
+    () => buildHeatmapSpotsFromAssessment(riskDocForBuilders),
+    [riskDocForBuilders]
+  );
+  const memoFindings = useMemo(() => buildFindingsFromAssessment(riskDocForBuilders), [riskDocForBuilders]);
 
   if (loading) {
     return (
@@ -154,13 +214,29 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
   const summary = data?.summary || {};
   const history: any[] = Array.isArray(data?.history) ? data.history : [];
   const biometrics = latest?.biometricsBreakdown || null;
+  // STEP 8: the Injury Risk section visualizes ONE explicitly selected
+  // assessment. LATEST reuses the overview payload; any other chip fetches
+  // that assessment's full authorized document (see selectAssessment).
+  const riskDoc = selectedAid === null ? latest : selDoc;
+  const riskLoading = selectedAid !== null && selLoading;
+  const riskError = selectedAid !== null ? selError : null;
+  const riskView = resolveAssessmentView({ assessment: riskDoc, loading: riskLoading, error: riskError });
+  const riskDocResolved = riskView.assessment;
+  // Provenance rule: a specifically selected assessment shows ONLY its own
+  // stored result. The athlete-level summary mirror applies to LATEST alone.
+  const ownClassification = riskDocResolved?.injuryRiskClassification ?? null;
   const riskPct =
-    typeof latest?.injuryRiskClassification?.riskPercentage === 'number'
-      ? latest.injuryRiskClassification.riskPercentage
-      : typeof summary.injuryRiskPercentage === 'number'
-        ? summary.injuryRiskPercentage
-        : null;
-  const riskLevel = latest?.injuryRiskClassification?.riskStatus ?? summary.injuryRiskLevel ?? null;
+    selectedAid === null
+      ? (typeof ownClassification?.riskPercentage === 'number'
+        ? ownClassification.riskPercentage
+        : typeof summary.injuryRiskPercentage === 'number'
+          ? summary.injuryRiskPercentage
+          : null)
+      : (typeof ownClassification?.riskPercentage === 'number' ? ownClassification.riskPercentage : null);
+  const riskLevel =
+    selectedAid === null
+      ? (ownClassification?.riskStatus ?? summary.injuryRiskLevel ?? null)
+      : (ownClassification?.riskStatus ?? null);
   const riskColor = RISK_COLORS[riskLevel] ?? Colors.outline;
 
   const metricEntries = biometrics
@@ -170,11 +246,10 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
     : [];
 
   const hasCompletedScore = typeof summary.latestScore === 'number';
-  const PROCESSING_STATUSES = ['created', 'pending', 'uploading', 'processing'];
   const processingAssessment =
     history.find(h => PROCESSING_STATUSES.includes(String(h.status || ''))) || null;
   const failedAssessment = history.find(h => h.status === 'failed') || null;
-  const recentHistory = history.slice(0, 8);
+  const recentHistory = history.slice(0, 12);
 
   const pTrend: any[] = Array.isArray(progressData?.chronologicalTrend) ? progressData.chronologicalTrend : [];
   const completedCount = typeof progressData?.completedAssessmentsCount === 'number'
@@ -189,11 +264,15 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
   const powerSeries = seriesFor('power');
   const mqSeries = seriesFor('movementQuality');
 
-  const confidence = typeof latest?.aiMetadata?.confidenceScore === 'number' ? latest.aiMetadata.confidenceScore : null;
-  // Factor cards via the shared visualization contract (identical data).
-  const factors = buildRiskFactors(latest);
-  const heatmapSpots = buildHeatmapSpotsFromAssessment(latest);
-  const findings = buildFindingsFromAssessment(latest);
+  const confidence = typeof riskDocResolved?.aiMetadata?.confidenceScore === 'number' ? riskDocResolved.aiMetadata.confidenceScore : null;
+  // Factor cards + heatmap via the shared visualization contract (identical
+  // builders the athlete screens use — no separate implementation). They
+  // derive from the resolved selection, so loading/error states show nothing
+  // stale from a previously selected assessment. STEP 9: computed above with
+  // the unconditional hooks; consumed here.
+  const factors = memoFactors;
+  const heatmapSpots = memoSpots;
+  const findings = memoFindings;
 
   return (
     <View style={styles.root}>
@@ -323,11 +402,86 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
               )}
             </View>
 
-            {/* Injury Risk */}
+            {/* Injury Risk — finalized shared visualization, bound to the
+                explicitly selected assessment (STEP 8). */}
             <Text style={styles.sectionTitle}>Injury Risk</Text>
             <View style={styles.card}>
-              {latest ? (
+              {recentHistory.length > 0 ? (
+                <View style={{ marginBottom: Spacing.md }}>
+                  <Text style={[Typography.labelCaps, { color: Colors.onSurfaceVariant, marginBottom: Spacing.xs }]}>
+                    ASSESSED SESSION
+                  </Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.sm }}>
+                    <TouchableOpacity
+                      testID="coach-assessment-chip-latest"
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: selectedAid === null }}
+                      style={[styles.sessionChip, selectedAid === null && styles.sessionChipActive]}
+                      activeOpacity={0.8}
+                      onPress={() => selectAssessment(null)}
+                    >
+                      <Text style={[styles.sessionChipText, selectedAid === null && styles.sessionChipTextActive]}>
+                        LATEST
+                      </Text>
+                    </TouchableOpacity>
+                    {recentHistory.map((h: any) => {
+                      const id = String(h._id || h.id || '');
+                      const code = h.assessmentCode || 'SESSION';
+                      const active = selectedAid === id;
+                      const dot =
+                        h.status === 'completed' ? '#009844'
+                        : h.status === 'failed' ? Colors.error
+                        : '#b26a00';
+                      return (
+                        <TouchableOpacity
+                          key={id || code}
+                          testID={`coach-assessment-chip-${code}`}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          accessibilityLabel={`Show injury risk for ${code}, status ${h.status || 'unknown'}`}
+                          style={[styles.sessionChip, active && styles.sessionChipActive]}
+                          activeOpacity={0.8}
+                          onPress={() => selectAssessment(id)}
+                        >
+                          <View style={[styles.sessionDot, { backgroundColor: dot }]} />
+                          <Text style={[styles.sessionChipText, active && styles.sessionChipTextActive]}>
+                            {code}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              ) : null}
+              {riskLoading ? (
+                <View style={styles.riskLoading}>
+                  <ActivityIndicator size="small" color={Colors.secondary} />
+                  <Text style={styles.emptyInlineText2}>Loading selected assessment…</Text>
+                </View>
+              ) : riskView.status === 'error' ? (
+                <View style={styles.riskUnavailable}>
+                  <Icon name="error-outline" size={22} color={Colors.error} />
+                  <Text style={[styles.emptyInlineText2, { color: Colors.error }]}>
+                    {riskView.errorMessage}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.retryBtn}
+                    activeOpacity={0.85}
+                    onPress={() => selectAssessment(selectedAid)}
+                  >
+                    <Text style={styles.retryText}>Retry</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : riskDocResolved ? (
                 <>
+                  {riskView.status === 'processing' ? (
+                    <View style={[styles.banner, { borderColor: 'rgba(178,106,0,0.4)', backgroundColor: 'rgba(178,106,0,0.08)', marginBottom: Spacing.sm }]}>
+                      <Icon name="hourglass-top" size={18} color="#b26a00" />
+                      <Text style={styles.bannerText}>
+                        {riskDocResolved.assessmentCode} is still processing — injury risk will be available once it completes.
+                      </Text>
+                    </View>
+                  ) : null}
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm }}>
                     <Text style={[Typography.labelCaps, { color: riskColor }]}>{(riskLevel ?? '').toUpperCase()} RISK</Text>
                     <Text style={Typography.monoData}>{riskPct != null ? `${riskPct}%` : '--'}</Text>
@@ -336,7 +490,7 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
                     <BiometricProgressBar label="" value={`${riskPct}%`} percent={riskPct} barColor={riskColor} barHeight={10} showShadow={false} />
                   ) : null}
                   <Text style={styles.riskProvenance}>
-                    {`FROM ${latest.assessmentCode} • ${formatDate(latest.createdAt)}`}
+                    {`FROM ${riskDocResolved.assessmentCode} • ${formatDate(riskDocResolved.createdAt)}`}
                   </Text>
 
                   {/* Risk factors */}
@@ -374,12 +528,25 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
                     )}
                   </View>
 
-                  {/* Heatmap / posture */}
+                  {/* Heatmap / posture — the SAME component athletes use,
+                      driven to the selected assessment's state (STEP 8).
+                      keyed by selection so marker/finding interaction state
+                      never leaks across assessments. */}
                   <Text style={styles.chartCaption}>STRAIN HEATMAP</Text>
                   <PostureHeatmap
+                    key={selectedAid ?? 'latest'}
                     height={isMd ? 320 : 260}
                     spots={heatmapSpots}
                     findings={findings}
+                    state={heatmapStateForView(riskView.status)}
+                    errorMessage={
+                      riskView.status === 'failed'
+                        ? (typeof riskDocResolved?.errorDetails?.message === 'string'
+                            ? riskDocResolved.errorDetails.message
+                            : 'Analysis failed for this assessment.')
+                        : riskView.errorMessage
+                    }
+                    emptyMessage="No heatmap data recorded for this assessment."
                   />
 
                   {/* AI confidence */}
@@ -387,7 +554,7 @@ export default function CoachAthleteOverviewScreen({ navigation, route }: any) {
                     <View style={styles.confidenceRow}>
                       <Icon name="verified-user" size={16} color={Colors.secondary} />
                       <Text style={styles.confidenceText}>{`AI CONFIDENCE ${Math.round(confidence)}%`}</Text>
-                      <Text style={styles.confidenceModel}>{latest.aiMetadata?.modelVersion ?? ''}</Text>
+                      <Text style={styles.confidenceModel}>{riskDocResolved.aiMetadata?.modelVersion ?? ''}</Text>
                     </View>
                   ) : null}
                 </>
@@ -703,5 +870,35 @@ const styles = StyleSheet.create({
   },
   confidenceText: { ...Typography.labelCaps, fontSize: 10, color: Colors.secondary },
   confidenceModel: { ...Typography.bodyMd, fontSize: 12, color: Colors.onSurfaceVariant, flex: 1, textAlign: 'right' },
-  riskUnavailable: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }
+  riskUnavailable: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  riskLoading: { alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: Spacing.lg },
+  sessionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(198,198,205,0.4)',
+    borderRadius: 999,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    backgroundColor: Colors.surfaceContainerLowest
+  },
+  sessionChipActive: {
+    borderColor: Colors.secondary,
+    backgroundColor: 'rgba(87,223,254,0.12)'
+  },
+  sessionChipText: {
+    ...Typography.labelCaps,
+    fontSize: 10,
+    letterSpacing: 1,
+    color: Colors.onSurfaceVariant
+  },
+  sessionChipTextActive: {
+    color: Colors.onSurface
+  },
+  sessionDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4
+  }
 });

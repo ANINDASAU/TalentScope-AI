@@ -18,7 +18,7 @@ const harness = createHarness({
   extraPackageMocks: {
     'react-native-svg': {
       __esModule: true, default: 'Svg',
-      Svg: 'Svg', Line: 'Line', Circle: 'Circle',
+      Svg: 'Svg', Line: 'Line', Circle: 'Circle', G: 'G',
       Defs: 'Defs', RadialGradient: 'RadialGradient', Stop: 'Stop'
     },
     '@expo/vector-icons': { MaterialIcons: 'MaterialIcons' }
@@ -351,6 +351,155 @@ const COACH_ENDPOINT_SHAPE = { // post-passthrough /coaches/me/athletes/:id/inju
   const cardError = render(React.createElement(components.default, { spots: [], findings: [], state: 'error', errorMessage: 'net down', onRetry: () => {} }));
   check('15l. PostureHeatmap forwards error state + retry',
     cardError.includes('net down') && cardError.includes('RETRY'));
+
+  /* ===== 16. Step 6: interaction view-models (pure) + interactive markup ===== */
+  check('16a. getSpotKey is joint+position aware and collision-free',
+    components.getSpotKey({ joint: 'Right Knee', cx: 30, cy: 80 }, 0) === 'Right Knee@30x80::0' &&
+    components.getSpotKey({ joint: 'Right Knee', cx: 30, cy: 80 }, 1) === 'Right Knee@30x80::1' &&
+    components.getSpotKey({ joint: 'Right Knee', cx: 30, cy: 90 }, 0) === 'Right Knee@30x90::0' &&
+    components.getSpotKey({ cx: 50, cy: 60 }, 2) === 'unlabeled@50x60::2' &&
+    components.getSpotKey({}, 0) === 'unlabeled@0x0::0');
+  const det0 = components.buildSpotDetail(spots[0], 0);
+  check('16b. buildSpotDetail: joint title + rounded score + band view-model',
+    det0.title === 'Right Knee' && det0.scoreText === '62/100' &&
+    det0.band === 'watch' && det0.bandLabel === 'WATCH');
+  check('16c. buildSpotDetail carries verbatim linked warning titles',
+    Array.isArray(det0.linkedWarningTitles) && det0.linkedWarningTitles[0] === 'Right Knee Valgus');
+  const detMissing = components.buildSpotDetail({ severity: 'low' }, 4);
+  check('16d. buildSpotDetail honest fallbacks (no joint, no score, no links)',
+    detMissing.title === 'Unlabeled joint' && detMissing.scoreText === '--/100' &&
+    detMissing.linkedWarningTitles.length === 0);
+  check('16e. toggleBand: tap sets, re-tap clears, tap other switches',
+    components.toggleBand(null, 'watch') === 'watch' &&
+    components.toggleBand('watch', 'watch') === null &&
+    components.toggleBand('watch', 'critical') === 'critical');
+  check('16f. spots carry contract relatedWarnings through the builder',
+    Array.isArray(spots[0].linkedWarningTitles) && spots[0].linkedWarningTitles[0] === 'Right Knee Valgus' &&
+    Array.isArray(spots[1].linkedWarningTitles));
+
+  // Interactive markup (initial state: nothing selected, no filter).
+  // NOTE: overlay press targets need a measured layout (onLayout), which
+  // SSR never provides — so SSR asserts the visual marker groups instead;
+  // real taps are covered by the headed Step-6 E2E.
+  const interMarkup = render(React.createElement(components.BodyHeatmap, { spots: multiSpots, state: 'ready' }));
+  check('16g. one marker group per spot rendered in the diagram',
+    (interMarkup.match(/<[Gg][\s>]/g) || []).length >= 4);
+  check('16h. no callout rendered before any tap (picture-identical default)',
+    !interMarkup.includes('heatmap-callout'));
+  const selMarkup = render(React.createElement(components.BodyHeatmap, { spots: multiSpots, state: 'ready', selectedIndex: 0 }));
+  check('16i. controlled selection renders the joint callout with score + link',
+    selMarkup.includes('heatmap-callout') && selMarkup.includes('Right Knee') &&
+    selMarkup.includes('88/100') && selMarkup.includes('Linked finding: Right Knee Valgus'));
+  const dimMarkup = render(React.createElement(components.BodyHeatmap, { spots: multiSpots, state: 'ready', activeBand: 'critical' }));
+  check('16j. band isolate dims non-matching markers (opacity affordance in DOM)',
+    dimMarkup.includes('opacity="0.22"'));
+  const noDimMarkup = render(React.createElement(components.BodyHeatmap, { spots: multiSpots, state: 'ready', activeBand: null }));
+  check('16k. no filter -> no dimming anywhere',
+    !noDimMarkup.includes('opacity="0.22"'));
+  const legendActive = render(React.createElement(components.HeatmapLegend, { spots: multiSpots, activeBand: 'watch' }));
+  check('16l. legend rows are pressable with stable testIDs',
+    legendActive.includes('heatmap-legend-watch') && legendActive.includes('heatmap-legend-critical'));
+  const cardLinked = render(React.createElement(components.default, {
+    spots: multiSpots, findings: components.buildFindingsFromAssessment(MULTI_DOC),
+    state: 'ready', height: 320, selectedIndex: 0
+  }));
+  check('16m. selected marker highlights its linked finding card',
+    cardLinked.includes('heatmap-finding-linked'));
+  const cardUnlinked = render(React.createElement(components.default, {
+    spots: multiSpots, findings: components.buildFindingsFromAssessment(MULTI_DOC),
+    state: 'ready', height: 320, selectedIndex: null
+  }));
+  check('16n. no selection -> no finding highlight',
+    !cardUnlinked.includes('heatmap-finding-linked'));
+
+  /* ===== 17. Step 7: selected-assessment view state (pure) ===== */
+  const viewMod = harness.loadTs(path.join(SVC, 'assessmentView'));
+  const STALE = { _id: 'old', status: 'completed', assessmentCode: 'TS-OLD' };
+  const vLoading = viewMod.resolveAssessmentView({ assessment: STALE, loading: true, error: null });
+  check('17a. loading clears the previous document (no stale viz)',
+    vLoading.status === 'loading' && vLoading.assessment === null);
+  const err404 = Object.assign(new Error('Assessment not found'), { status: 404 });
+  const v404 = viewMod.resolveAssessmentView({ assessment: STALE, loading: false, error: err404 });
+  check('17b. 404 -> error, stale cleared, not-found copy',
+    v404.status === 'error' && v404.assessment === null && v404.errorStatus === 404 &&
+    /not found/i.test(v404.errorMessage || ''));
+  const err403 = Object.assign(new Error("You do not have permission to view this assessment."), { status: 403 });
+  const v403 = viewMod.resolveAssessmentView({ assessment: null, loading: false, error: err403 });
+  check('17c. 403 -> error with access copy (athlete/coach scoping surfaced)',
+    v403.status === 'error' && /access|permission/i.test(v403.errorMessage || ''));
+  const v401 = viewMod.resolveAssessmentView({ assessment: null, loading: false, error: Object.assign(new Error('x'), { status: 401 }) });
+  check('17d. 401 -> re-login copy', v401.status === 'error' && /log in/i.test(v401.errorMessage || ''));
+  const vNet = viewMod.resolveAssessmentView({ assessment: null, loading: false, error: new Error('Network request failed') });
+  check('17e. network failure -> connection copy + retry affordance state',
+    vNet.status === 'error' && /no connection/i.test(vNet.errorMessage || ''));
+  check('17f. loaded with no document -> empty (honest, not error)',
+    viewMod.resolveAssessmentView({ assessment: null, loading: false, error: null }).status === 'empty');
+  for (const st of ['created', 'pending', 'uploading', 'processing']) {
+    const v = viewMod.resolveAssessmentView({ assessment: { _id: 'p', status: st }, loading: false, error: null });
+    check(`17g. status '${st}' -> processing view (document kept)`,
+      v.status === 'processing' && v.assessment && v.assessment.status === st);
+  }
+  const vFailed = viewMod.resolveAssessmentView({ assessment: { _id: 'f', status: 'failed' }, loading: false, error: null });
+  check('17h. failed -> failed view (document kept for the failure card)',
+    vFailed.status === 'failed' && !!vFailed.assessment);
+  const vReady = viewMod.resolveAssessmentView({ assessment: { _id: 'c', status: 'completed' }, loading: false, error: null });
+  check('17i. completed -> ready (missing risk data handled downstream, not here)',
+    vReady.status === 'ready' && !!vReady.assessment);
+  check('17j. heatmap state mapping covers all six views',
+    viewMod.heatmapStateForView('loading') === 'loading' &&
+    viewMod.heatmapStateForView('processing') === 'processing' &&
+    viewMod.heatmapStateForView('error') === 'error' &&
+    viewMod.heatmapStateForView('failed') === 'error' &&
+    viewMod.heatmapStateForView('ready') === 'ready' &&
+    viewMod.heatmapStateForView('empty') === 'ready');
+  check('17k. error outputs never carry a document (nothing stale to render)',
+    [v404, v403, v401, vNet].every(v => v.assessment === null));
+
+  /* ===== 18. Step 8: coach plug-in uses the SAME builders per assessment ===== */
+  // Lean history rows (as shipped inside the coach overview payload) carry
+  // no risk payload — builders must degrade honestly, never crash.
+  const LEAN_ROW = { _id: 'h1', assessmentCode: 'TS-LEAN', status: 'processing', testType: 'unilateral_squat' };
+  check('18a. lean history row -> no spots, honest placeholder findings, no crash',
+    components.buildHeatmapSpotsFromAssessment(LEAN_ROW).length === 0 &&
+    components.buildFindingsFromAssessment(LEAN_ROW)[0].tagText === 'NO FINDINGS');
+  const vLean = viewMod.resolveAssessmentView({ assessment: LEAN_ROW, loading: false, error: null });
+  check('18b. lean processing row resolves to the processing view (coach chip path)',
+    vLean.status === 'processing' && vLean.assessment === LEAN_ROW &&
+    viewMod.heatmapStateForView(vLean.status) === 'processing');
+  const docA = SEEDED_DOC;
+  const docB = MULTI_DOC;
+  const spotsA = components.buildHeatmapSpotsFromAssessment(docA);
+  const spotsB = components.buildHeatmapSpotsFromAssessment(docB);
+  check('18c. each assessment maps to its OWN markers (no cross-assessment bleed)',
+    spotsA.length === 2 && spotsB.length === 4 &&
+    JSON.stringify(spotsA) !== JSON.stringify(spotsB) &&
+    spotsB[0].joint === 'Right Knee' && spotsB[0].severity === 'critical');
+  check('18d. same input twice -> identical markers (selection switches are deterministic)',
+    JSON.stringify(components.buildHeatmapSpotsFromAssessment(docA)) === JSON.stringify(spotsA));
+
+  /* ===== 19. Step 9: perf/correctness invariants of the shared component ===== */
+  // Referential transparency: identical input -> deep-equal output, so
+  // memoized screens keep object identity across renders that pass the
+  // same doc (no spurious contract re-runs).
+  const memoIn = JSON.parse(JSON.stringify(docA));
+  check('19a. builder output deep-equal for deep-equal input (memo-safe)',
+    JSON.stringify(components.buildHeatmapSpotsFromAssessment(memoIn)) === JSON.stringify(spotsA));
+  check('19b. legend derivation is memo-safe (deep-equal in -> deep-equal out)',
+    JSON.stringify(components.buildLegendItems(memoIn.heatmapSpots.map((s, i) => ({
+      cx: 10 + i, cy: 20, severity: s.strainScore >= 70 ? 'critical' : s.strainScore >= 40 ? 'watch' : 'low'
+    })))) === JSON.stringify(components.buildLegendItems(docA.heatmapSpots.map((s, i) => ({
+      cx: 10 + i, cy: 20, severity: s.strainScore >= 70 ? 'critical' : s.strainScore >= 40 ? 'watch' : 'low'
+    })))));
+  // Zero-cost empties: the degenerate paths never allocate misleading data.
+  check('19c. empty/null inputs stay empty (no fabricated markers at any layer)',
+    components.buildLegendItems([]).length === 0 &&
+    components.buildLegendItems(null).length === 0 &&
+    components.buildSpotDetail({ severity: 'low' }, 0).scoreText === '--/100');
+  // Deterministic spot keys across the interaction surface.
+  const keyA = components.getSpotKey({ joint: 'Knee', cx: 30, cy: 80 }, 0);
+  const keyB = components.getSpotKey({ joint: 'Knee', cx: 30, cy: 80 }, 0);
+  check('19d. getSpotKey stable across calls (pure key derivation)',
+    keyA === keyB && keyA === 'Knee@30x80::0');
 
   console.log('\n=== STEP 3: Risk-Visualization Contract - verification ===');
   results.forEach(r => console.log(r));

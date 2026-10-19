@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,12 @@ import { Colors, Typography, Spacing } from '../../theme/colors';
 import { CONTAINER_MAX } from '../../theme/useResponsive';
 import CircularScoreGauge from '../../components/CircularScoreGauge';
 import { BodyHeatmap, HeatmapLegend, buildHeatmapSpotsFromAssessment } from '../../components/PostureHeatmap';
-import { getProfile, getLatestAssessment } from '../../services/api';
+import type { SeverityBand } from '../../services/riskVisualization';
+import { getProfile, getLatestAssessment, getAssessmentById, getAssessmentHistory } from '../../services/api';
+import {
+  resolveAssessmentView,
+  heatmapStateForView
+} from '../../services/assessmentView';
 import {
   buildRiskVisualization,
   buildRiskFactors,
@@ -49,51 +54,95 @@ export default function InjuryRiskScreen({ navigation }: any) {
   const container = { alignSelf: 'center' as const, width: '100%' as const, maxWidth: CONTAINER_MAX };
 
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<any | null>(null);
   const [profile, setProfile] = useState<any>(null);
   const [latest, setLatest] = useState<any>(null);
+  const [history, setHistory] = useState<any[]>([]);
+  /** Selected assessment ID. Null = latest completed assessment. */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** Monotonic fetch token: a late response from a previous selection
+   *  must never overwrite the newly selected assessment (no stale viz). */
+  const requestRef = useRef(0);
 
-  const fetchData = useCallback(async () => {
+  // STEP 7: every visualization on this screen belongs to ONE explicitly
+  // selected assessment ID. Switching clears the previous document FIRST
+  // (loading/error outputs carry no document), then fetches the new one.
+  const loadSelection = useCallback(async (id: string | null) => {
+    const req = ++requestRef.current;
     setLoading(true);
     setError(null);
+    setLatest(null);
+    setSelectedSpot(null);
+    setActiveBand(null);
     try {
-      const [profileRes, latestRes] = await Promise.all([getProfile(), getLatestAssessment()]);
+      const [profileRes, histRes] = await Promise.all([getProfile(), getAssessmentHistory()]);
+      if (requestRef.current !== req) return;
       setProfile(profileRes?.user || profileRes?.data || null);
-      setLatest(latestRes?.data ?? null);
+      setHistory(Array.isArray(histRes?.data) ? histRes.data.slice(0, 12) : []);
+      const docRes = id ? await getAssessmentById(id) : await getLatestAssessment();
+      if (requestRef.current !== req) return;
+      setLatest(docRes?.data ?? null);
     } catch (e: any) {
-      setError(e?.message || 'Failed to load injury risk data');
+      if (requestRef.current !== req) return;
+      setError(e);
     } finally {
-      setLoading(false);
+      if (requestRef.current === req) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    loadSelection(null);
+  }, [loadSelection]);
+
+  const selectAssessment = (id: string | null) => {
+    setSelectedId(id);
+    loadSelection(id);
+  };
+
+  // The resolved view is the single source of truth below: `activeDoc` is
+  // null in loading/error states, so stale data can never render.
+  const view = resolveAssessmentView({ assessment: latest, loading, error });
+  const activeDoc = view.assessment;
 
   // ---- risk data: all mapping lives in the finalized visualization
   // contract (services/riskVisualization); this screen only renders it. ----
-  const viz = buildRiskVisualization(latest, profile ?? undefined);
+  // NOTE: everything derives from `activeDoc` (the resolved selection), so
+  // loading/error renders can never show the previous assessment's data.
+  // The profile mirror fallback applies ONLY to ready/empty views: a
+  // processing/failed/errored selection must never borrow a number that
+  // does not belong to it.
+  const vizDoc = view.status === 'ready' || view.status === 'empty' ? activeDoc : null;
+  const vizProfile = view.status === 'ready' || view.status === 'empty' ? (profile ?? undefined) : undefined;
+  // STEP 9: contract runs once per (doc, profile) — not once per render.
+  const viz = useMemo(() => buildRiskVisualization(vizDoc, vizProfile), [vizDoc, vizProfile]);
   const riskPct: number | null = viz.overall.percentage;
   const riskLevel: string | null = viz.overall.level;
 
-  const factors: RiskFactorView[] = buildRiskFactors(latest);
+  const factors: RiskFactorView[] = useMemo(() => buildRiskFactors(activeDoc), [activeDoc]);
 
-  const insights: Insight[] = buildRiskInsights(latest).map(ins => ({
-    icon: INSIGHT_STYLE[ins.tone].icon,
-    color: INSIGHT_STYLE[ins.tone].color,
-    title: ins.title,
-    body: ins.body
-  }));
+  const insights: Insight[] = useMemo(
+    () =>
+      buildRiskInsights(activeDoc).map(ins => ({
+        icon: INSIGHT_STYLE[ins.tone].icon,
+        color: INSIGHT_STYLE[ins.tone].color,
+        title: ins.title,
+        body: ins.body
+      })),
+    [activeDoc]
+  );
 
-  const exercises: ExerciseView[] = buildExerciseList(latest);
+  const exercises: ExerciseView[] = useMemo(() => buildExerciseList(activeDoc), [activeDoc]);
 
   const kinematics = viz.meta.kinematics;
   const hasKinematics =
     kinematics.kneeFlexionAngleDeg !== null || kinematics.spineAngleDeg !== null;
 
   // Contract-driven heatmap markers for the body diagram (Step 5).
-  const heatmapSpots = buildHeatmapSpotsFromAssessment(latest);
+  const heatmapSpots = useMemo(() => buildHeatmapSpotsFromAssessment(activeDoc), [activeDoc]);
+  // STEP 6: diagram + overlay legend share one selection/filter state so a
+  // legend tap isolates markers and a marker tap shows its joint callout.
+  const [selectedSpot, setSelectedSpot] = useState<number | null>(null);
+  const [activeBand, setActiveBand] = useState<SeverityBand | null>(null);
 
   const grid = (nodes: React.ReactNode[], cols: number, gap: number) => {
     if (cols <= 1) return <View style={{ gap }}>{nodes}</View>;
@@ -155,15 +204,23 @@ export default function InjuryRiskScreen({ navigation }: any) {
         <View style={styles.gaugeEmpty}>
           <Text style={[styles.riskScore, { fontSize: 44 }]}>--</Text>
           <Text style={[Typography.bodyMd, { color: Colors.onSurfaceVariant, textAlign: 'center', paddingHorizontal: Spacing.base }]}>
-            Complete an assessment to compute injury risk
+            {view.status === 'processing'
+              ? `Analysis is still running for ${activeDoc?.assessmentCode || 'this assessment'}. Results appear here automatically.`
+              : view.status === 'failed'
+                ? `Analysis failed${activeDoc?.assessmentCode ? ` for ${activeDoc.assessmentCode}` : ''}. ${typeof activeDoc?.errorDetails?.message === 'string' ? activeDoc.errorDetails.message : ''}`.trim()
+                : view.status === 'error'
+                  ? 'This assessment could not be loaded.'
+                  : 'Complete an assessment to compute injury risk'}
           </Text>
-          <TouchableOpacity
-            style={styles.emptyBtn}
-            activeOpacity={0.85}
-            onPress={() => navigation.navigate('MainTabs', { screen: 'Assess' })}
-          >
-            <Text style={styles.emptyBtnText}>Start Assessment</Text>
-          </TouchableOpacity>
+          {view.status === 'empty' ? (
+            <TouchableOpacity
+              style={styles.emptyBtn}
+              activeOpacity={0.85}
+              onPress={() => navigation.navigate('MainTabs', { screen: 'Assess' })}
+            >
+              <Text style={styles.emptyBtnText}>Start Assessment</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       ) : (
         <>
@@ -183,8 +240,8 @@ export default function InjuryRiskScreen({ navigation }: any) {
             </View>
           )}
           <Text style={[Typography.bodyMd, { color: Colors.onSurfaceVariant, textAlign: 'center', paddingHorizontal: Spacing.base, marginTop: Spacing.md }]}>
-            {latest
-              ? `Based on ${latest.testType ? String(latest.testType).replace(/_/g, ' ') : 'your most recent'} assessment ${latest.assessmentCode || ''}`.trim()
+            {activeDoc
+              ? `Based on ${activeDoc.testType ? String(activeDoc.testType).replace(/_/g, ' ') : 'your most recent'} assessment ${activeDoc.assessmentCode || ''}`.trim()
               : 'Based on your most recent completed assessment.'}
           </Text>
         </>
@@ -196,7 +253,12 @@ export default function InjuryRiskScreen({ navigation }: any) {
     <View style={[styles.biometricCard, isLg && { flex: 1 }]}>
       <View style={styles.overlayTagWrap}>
         <Text style={styles.overlayTag}>BIOMETRIC OVERLAY</Text>
-        <HeatmapLegend spots={heatmapSpots} overlay />
+        <HeatmapLegend
+          spots={heatmapSpots}
+          overlay
+          activeBand={activeBand}
+          onSelectBand={setActiveBand}
+        />
       </View>
       <View style={styles.metricChipsRow}>
         <View style={styles.metricChip}>
@@ -216,14 +278,24 @@ export default function InjuryRiskScreen({ navigation }: any) {
         <BodyHeatmap
           imageUrl={POSE_IMG}
           spots={heatmapSpots}
-          state={loading ? 'loading' : error ? 'error' : 'ready'}
-          errorMessage={error}
-          onRetry={fetchData}
+          state={heatmapStateForView(view.status)}
+          errorMessage={
+            view.status === 'failed'
+              ? (typeof activeDoc?.errorDetails?.message === 'string'
+                  ? activeDoc.errorDetails.message
+                  : 'Analysis failed for this assessment.')
+              : view.errorMessage
+          }
+          onRetry={view.status === 'error' ? () => loadSelection(selectedId) : undefined}
           emptyMessage={
-            !latest
+            !activeDoc
               ? 'COMPLETE AN ASSESSMENT TO SEE YOUR JOINT HEATMAP'
               : 'NO JOINT STRAIN RECORDED FOR THIS ASSESSMENT'
           }
+          selectedIndex={selectedSpot}
+          onSelectSpot={setSelectedSpot}
+          activeBand={activeBand}
+          onBandChange={setActiveBand}
         />
       </View>
     </View>
@@ -248,11 +320,66 @@ export default function InjuryRiskScreen({ navigation }: any) {
         </View>
       ) : (
         <View style={[styles.dashedPlaceholder, { alignSelf: 'stretch' }]}>
-          <Text style={styles.emptyBody}>No critical warnings recorded in your latest assessment.</Text>
+          <Text style={styles.emptyBody}>No critical warnings recorded in the selected assessment.</Text>
         </View>
       )}
     </View>
   );
+
+  const STATUS_DOT: Record<string, string> = {
+    completed: '#009844',
+    failed: Colors.error,
+    processing: '#b26a00',
+    uploading: Colors.secondary,
+    pending: '#b26a00',
+    created: '#b26a00'
+  };
+
+  // STEP 7: explicit assessment picker. Every chip carries its own ID, so
+  // the heatmap below always belongs to the visibly selected assessment.
+  const selectorBar = history.length > 0 ? (
+    <View style={{ marginBottom: Spacing.xs }}>
+      <Text style={[Typography.labelCaps, { color: Colors.onSurfaceVariant, marginBottom: Spacing.xs }]}>
+        ASSESSED SESSION
+      </Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.sm }}>
+        <TouchableOpacity
+          testID="assessment-chip-latest"
+          accessibilityRole="button"
+          accessibilityState={{ selected: selectedId === null }}
+          style={[styles.sessionChip, selectedId === null && styles.sessionChipActive]}
+          activeOpacity={0.8}
+          onPress={() => selectAssessment(null)}
+        >
+          <Text style={[styles.sessionChipText, selectedId === null && styles.sessionChipTextActive]}>
+            LATEST
+          </Text>
+        </TouchableOpacity>
+        {history.map((h: any) => {
+          const id = String(h._id || h.id || '');
+          const code = h.assessmentCode || 'SESSION';
+          const active = selectedId === id;
+          return (
+            <TouchableOpacity
+              key={id || code}
+              testID={`assessment-chip-${code}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={`Show injury risk for ${code}, status ${h.status || 'unknown'}`}
+              style={[styles.sessionChip, active && styles.sessionChipActive]}
+              activeOpacity={0.8}
+              onPress={() => selectAssessment(id)}
+            >
+              <View style={[styles.sessionDot, { backgroundColor: STATUS_DOT[h.status] || Colors.outline }]} />
+              <Text style={[styles.sessionChipText, active && styles.sessionChipTextActive]}>
+                {code}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+    </View>
+  ) : null;
 
   const eliteCard = (
     <View style={styles.eliteCard}>
@@ -346,15 +473,17 @@ export default function InjuryRiskScreen({ navigation }: any) {
             </View>
 
             <View style={{ paddingHorizontal: padH, gap: Spacing.gutter }}>
-              {error && (
+              {view.status === 'error' && (
                 <View style={styles.errorBanner}>
                   <Icon name="error-outline" size={18} color={Colors.error} />
-                  <Text style={styles.errorText}>{error}</Text>
-                  <TouchableOpacity style={styles.retryBtn} onPress={fetchData} activeOpacity={0.85}>
+                  <Text style={styles.errorText}>{view.errorMessage}</Text>
+                  <TouchableOpacity style={styles.retryBtn} onPress={() => loadSelection(selectedId)} activeOpacity={0.85}>
                     <Text style={styles.retryText}>Retry</Text>
                   </TouchableOpacity>
                 </View>
               )}
+
+              {selectorBar}
 
               {isMd ? (
                 <>
@@ -521,6 +650,35 @@ const styles = StyleSheet.create({
     padding: Spacing.base
   },
   errorText: { flex: 1, fontSize: 13, lineHeight: 18, color: Colors.error },
+  sessionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(198,198,205,0.4)',
+    borderRadius: 999,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    backgroundColor: Colors.surfaceContainerLowest
+  },
+  sessionChipActive: {
+    borderColor: Colors.secondary,
+    backgroundColor: 'rgba(87,223,254,0.12)'
+  },
+  sessionChipText: {
+    ...Typography.labelCaps,
+    fontSize: 10,
+    letterSpacing: 1,
+    color: Colors.onSurfaceVariant
+  },
+  sessionChipTextActive: {
+    color: Colors.onSurface
+  },
+  sessionDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4
+  },
   retryBtn: {
     backgroundColor: Colors.error,
     paddingHorizontal: Spacing.base,

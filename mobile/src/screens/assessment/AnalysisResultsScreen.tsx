@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import {
   markAssessmentCompleted
 } from '../../services/api';
 import { deleteVideoForServerId } from '../../services/storageManager';
+import { useIsOnline } from '../../hooks/useConnectivity';
 
 const PROCESSING_STATUSES = ['created', 'pending', 'uploading', 'processing'];
 
@@ -91,6 +92,7 @@ export default function AnalysisResultsScreen({ navigation, route }: any) {
   const { width } = useWindowDimensions();
   const isMd = width >= 768;
   const padH = isMd ? Spacing.marginDesktop : Spacing.marginMobile;
+  const online = useIsOnline();
 
   const assessmentIdParam: string | undefined = route?.params?.assessmentId;
   const [assessment, setAssessment] = useState<any>(null);
@@ -98,8 +100,12 @@ export default function AnalysisResultsScreen({ navigation, route }: any) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  /** STEP 7 race guard: a late response for a previous assessment ID must
+   *  never overwrite the newly selected one. */
+  const requestRef = useRef(0);
 
   const load = useCallback(async () => {
+    const req = ++requestRef.current;
     try {
       setLoadError(null);
       let data: any = null;
@@ -110,26 +116,37 @@ export default function AnalysisResultsScreen({ navigation, route }: any) {
         const res = await getLatestAssessment();
         data = res?.data ?? null;
       }
+      if (requestRef.current !== req) return;
       setAssessment(data);
     } catch (e) {
+      if (requestRef.current !== req) return;
+      // Clear any previous document: error outputs carry no stale data.
+      setAssessment(null);
       setLoadError(e instanceof Error ? e.message : 'Failed to load assessment');
     } finally {
-      setLoading(false);
+      if (requestRef.current === req) setLoading(false);
     }
   }, [assessmentIdParam]);
 
   useEffect(() => {
     setLoading(true);
+    // STEP 7: never display the previous assessment while the newly
+    // selected one is loading (covers ID changes and manual reloads).
+    setAssessment(null);
+    setFinalizeError(null);
     load();
   }, [load]);
 
   useEffect(() => {
     if (!assessment || !PROCESSING_STATUSES.includes(assessment.status)) return undefined;
+    // Poll only while actually processing AND reachable: an offline tab
+    // burns battery retrying a request that cannot succeed (STEP 9).
+    if (!online) return undefined;
     const interval = setInterval(() => {
       load();
     }, 5000);
     return () => clearInterval(interval);
-  }, [assessment, load]);
+  }, [assessment, load, online]);
 
   const finalizeReview = async () => {
     if (!assessment?._id || finalizing) return;
@@ -176,6 +193,10 @@ export default function AnalysisResultsScreen({ navigation, route }: any) {
     typeof assessment?.previousScoreComparison === 'number' && assessment.previousScoreComparison !== 0
       ? assessment.previousScoreComparison
       : null;
+  // STEP 9: contract runs once per document — declared BEFORE the early
+  // returns below (hooks must run unconditionally), not once per render.
+  const heatmapSpots = useMemo(() => buildHeatmapSpots(assessment), [assessment]);
+  const findings = useMemo(() => buildFindings(assessment), [assessment]);
 
   if (loading && !assessment) {
     return (
@@ -187,22 +208,24 @@ export default function AnalysisResultsScreen({ navigation, route }: any) {
   }
 
   if (!assessment) {
+    // STEP 7: a targeted ID that fails (invalid, not found, unauthorized,
+    // API failure) is "unavailable" — distinct from having no assessments.
+    const targeted = !!assessmentIdParam;
     return (
       <View style={styles.root}>
         <View style={[styles.header, { paddingHorizontal: padH }]}>
           <Text style={styles.brand}>TalentScope AI</Text>
         </View>
         <View style={[styles.centered, { paddingHorizontal: padH }]}>
-          <Icon name="insights" size={64} color={Colors.onSurfaceVariant} />
-          <Text style={[Typography.headlineLgMobile, { color: Colors.primary, marginTop: Spacing.md }]}>
-            No assessments yet
+          <Icon name={targeted ? 'error-outline' : 'insights'} size={64} color={targeted ? Colors.error : Colors.onSurfaceVariant} />
+          <Text style={[Typography.headlineLgMobile, { color: targeted ? Colors.error : Colors.primary, marginTop: Spacing.md }]}>
+            {targeted ? 'Assessment unavailable' : 'No assessments yet'}
           </Text>
           <Text style={[Typography.bodyMd, { color: Colors.onSurfaceVariant, textAlign: 'center', marginTop: Spacing.sm }]}>
-            Start your first assessment session to see performance analysis here.
+            {targeted
+              ? (loadError || 'This assessment could not be loaded.')
+              : 'Start your first assessment session to see performance analysis here.'}
           </Text>
-          {loadError ? (
-            <Text style={styles.inlineError}>{loadError}</Text>
-          ) : null}
           <TouchableOpacity style={styles.primaryActionBtn} activeOpacity={0.85} onPress={goToAssessTab}>
             <Text style={styles.primaryActionText}>GO TO ASSESSMENT</Text>
           </TouchableOpacity>
@@ -354,8 +377,6 @@ export default function AnalysisResultsScreen({ navigation, route }: any) {
   }
 
   const biometrics = buildBiometrics(assessment);
-  const heatmapSpots = buildHeatmapSpots(assessment);
-  const findings = buildFindings(assessment);
   const recommendations = Array.isArray(assessment.recommendations) ? assessment.recommendations : [];
   const aiInsights = Array.isArray(assessment.aiInsights) ? assessment.aiInsights.filter(Boolean) : [];
 
@@ -435,6 +456,7 @@ export default function AnalysisResultsScreen({ navigation, route }: any) {
         POSTURE ERROR HEATMAP
       </Text>
       <PostureHeatmap
+        key={assessment._id || assessment.assessmentCode}
         state={
           isProcessing ? 'processing'
           : isFailed || loadError ? 'error'
