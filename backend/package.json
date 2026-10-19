@@ -1,0 +1,37 @@
+{
+  "name": "talentscope-backend",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node src/config/testDbInMemory.js && node src/config/testModels.js && node src/config/testAuthAthlete.js && node src/config/testAssessmentDb.js && node src/config/testCoachDb.js && node src/config/testRelationshipsIndexes.js && node src/config/testAssessmentApis.js && node src/config/testDashboardProgress.js && node src/config/testPhase9DatabaseFull.js && node src/config/testRedisSetup.js && node src/config/testRedisCaching.js",
+    "test:db": "node src/config/testDbConnection.js",
+    "test:db:memory": "node src/config/testDbInMemory.js",
+    "test:models": "node src/config/testModels.js",
+    "test:auth": "node src/config/testAuthAthlete.js",
+    "test:assessment": "node src/config/testAssessmentDb.js",
+    "test:coach": "node src/config/testCoachDb.js",
+    "test:indexes": "node src/config/testRelationshipsIndexes.js",
+    "test:api:assessment": "node src/config/testAssessmentApis.js",
+    "test:dashboard:progress": "node src/config/testDashboardProgress.js",
+    "test:db:full": "node src/config/testPhase9DatabaseFull.js",
+    "test:redis": "node src/config/testRedisSetup.js",
+    "test:caching": "node src/config/testRedisCaching.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.4.0",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "ioredis-mock": "^8.13.1",
+    "mongodb-memory-server": "^11.2.0",
+    "nodemon": "^3.1.0"
+  }
+}
