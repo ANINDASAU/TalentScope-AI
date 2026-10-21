@@ -13,6 +13,8 @@ _POSE_MODEL_URL = (
 )
 _TASK_LANDMARKS = {
 	"nose": 0,
+	"left_ear": 7,
+	"right_ear": 8,
 	"left_shoulder": 11,
 	"right_shoulder": 12,
 	"left_elbow": 13,
@@ -23,6 +25,8 @@ _TASK_LANDMARKS = {
 	"right_hip": 24,
 	"left_knee": 25,
 	"right_knee": 26,
+	"left_ankle": 27,
+	"right_ankle": 28,
 }
 
 

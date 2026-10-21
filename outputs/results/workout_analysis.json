@@ -1,0 +1,175 @@
+{
+  "report_version": 1,
+  "generated_at_utc": "2026-10-19T15:32:40.333512+00:00",
+  "source": "data\\videos\\workout.mp4",
+  "model": "MediaPipe Pose Landmarker",
+  "assessment_type": "2D computer-vision estimate; not an official sports judging result",
+  "video": {
+    "frames_processed": 325,
+    "fps": 23.976,
+    "frames_with_pose": 325,
+    "pose_detection_rate_percent": 100.0
+  },
+  "summary": {
+    "valid_repetitions": 0,
+    "no_reps": 4,
+    "attempts": 4,
+    "valid_rep_rate_percent": 0.0,
+    "average_form_score": 40.0,
+    "form_score_weights_percent": {
+      "depth": 40,
+      "body_alignment": 30,
+      "top_lockout": 30
+    }
+  },
+  "rules_assessed": {
+    "bottom_elbow_angle_max_degrees": 90,
+    "body_line_angle_degrees": [
+      175,
+      180
+    ],
+    "top_elbow_lockout_min_degrees": 175,
+    "target_rep_cadence_seconds": [
+      2.0,
+      3.0
+    ],
+    "neutral_neck_cue_angle_min_degrees": 160
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "verdict": "no_rep",
+      "form_score": 40,
+      "duration_seconds": 4.337666666666666,
+      "cadence_target_seconds": [
+        2.0,
+        3.0
+      ],
+      "cadence_meets_target": false,
+      "measurements_degrees": {
+        "elbow_minimum": 55.28827309813134,
+        "elbow_maximum": 174.80991135070892,
+        "body_line_minimum": 158.13172847410692,
+        "body_line_maximum": 178.29093403052156
+      },
+      "neck_issue_observed": false,
+      "failed_rules": [
+        "Keep shoulders, hips, and ankles aligned at 175-180 degrees.",
+        "Finish with full arm lockout at 175 degrees or more."
+      ]
+    },
+    {
+      "attempt": 2,
+      "verdict": "no_rep",
+      "form_score": 40,
+      "duration_seconds": 3.5035,
+      "cadence_target_seconds": [
+        2.0,
+        3.0
+      ],
+      "cadence_meets_target": false,
+      "measurements_degrees": {
+        "elbow_minimum": 67.07850034265773,
+        "elbow_maximum": 173.52889030415918,
+        "body_line_minimum": 168.8293451069637,
+        "body_line_maximum": 179.91533191463097
+      },
+      "neck_issue_observed": false,
+      "failed_rules": [
+        "Keep shoulders, hips, and ankles aligned at 175-180 degrees.",
+        "Finish with full arm lockout at 175 degrees or more."
+      ]
+    },
+    {
+      "attempt": 3,
+      "verdict": "no_rep",
+      "form_score": 40,
+      "duration_seconds": 2.961291666666666,
+      "cadence_target_seconds": [
+        2.0,
+        3.0
+      ],
+      "cadence_meets_target": true,
+      "measurements_degrees": {
+        "elbow_minimum": 64.33302973397302,
+        "elbow_maximum": 173.57249934441143,
+        "body_line_minimum": 171.00967752218307,
+        "body_line_maximum": 179.86201997667874
+      },
+      "neck_issue_observed": true,
+      "failed_rules": [
+        "Keep shoulders, hips, and ankles aligned at 175-180 degrees.",
+        "Finish with full arm lockout at 175 degrees or more."
+      ]
+    },
+    {
+      "attempt": 4,
+      "verdict": "no_rep",
+      "form_score": 40,
+      "duration_seconds": 2.7110416666666666,
+      "cadence_target_seconds": [
+        2.0,
+        3.0
+      ],
+      "cadence_meets_target": true,
+      "measurements_degrees": {
+        "elbow_minimum": 54.362112112295335,
+        "elbow_maximum": 174.28991705638867,
+        "body_line_minimum": 166.59662966839275,
+        "body_line_maximum": 179.98306054237173
+      },
+      "neck_issue_observed": true,
+      "failed_rules": [
+        "Keep shoulders, hips, and ankles aligned at 175-180 degrees.",
+        "Finish with full arm lockout at 175 degrees or more.",
+        "Video ended before this repetition was completed."
+      ]
+    }
+  ],
+  "improvement_advice": [
+    {
+      "priority": "high",
+      "issue": "Body alignment",
+      "advice": "Brace your core and keep shoulders, hips, and ankles aligned; keep all three visible from the side.",
+      "affected_attempts": 4
+    },
+    {
+      "priority": "high",
+      "issue": "Incomplete lockout",
+      "advice": "Finish each repetition by straightening the arms to at least 175 degrees without losing body alignment.",
+      "affected_attempts": 4
+    },
+    {
+      "priority": "medium",
+      "issue": "Cadence outside target",
+      "advice": "Use a controlled 2-3 second repetition; cadence is reported separately and does not alter the weighted form score.",
+      "affected_attempts": 2
+    },
+    {
+      "priority": "medium",
+      "issue": "Neck position",
+      "advice": "Keep your neck neutral and gaze toward the floor rather than reaching your chin forward.",
+      "affected_attempts": 2
+    },
+    {
+      "priority": "info",
+      "issue": "Incomplete final attempt",
+      "advice": "Record through the final lockout so the last repetition can be assessed.",
+      "affected_attempts": 1
+    }
+  ],
+  "not_assessed": {
+    "elbow_flare": "Needs a front or 45-degree camera view.",
+    "chest_clearance": "Needs floor calibration to measure the 5 cm distance.",
+    "knee_contact": "Needs a suitable view and calibrated floor/contact detection.",
+    "heart_rate": "Needs a wearable heart-rate sensor."
+  },
+  "interpretation_limits": [
+    "Angles are estimates from 2D landmarks and depend on camera position, visibility, and pose-model accuracy.",
+    "A body-line angle at the hip is a proxy and does not establish full spinal alignment or diagnose injury risk.",
+    "The 0-100 score applies the workbook's three weighted binary checks; it is not a learned expert score or medical assessment."
+  ],
+  "graphs": {
+    "dashboard_png": "outputs\\graphs\\workout_analysis_graphs.png"
+  }
+}

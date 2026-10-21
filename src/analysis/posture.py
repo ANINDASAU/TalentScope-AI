@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Optional
 
 from .angle import calculate_angle
 
@@ -10,6 +10,8 @@ class PoseAnalysis:
 	shoulder_angle: Optional[float]
 	hip_angle: Optional[float]
 	side: Optional[str]
+	body_line_angle: Optional[float] = None
+	neck_angle: Optional[float] = None
 
 
 def _point(landmarks, name):
@@ -27,12 +29,20 @@ def _angles_for_side(landmarks, side):
 	wrist = _point(landmarks, f"{side}_wrist")
 	hip = _point(landmarks, f"{side}_hip")
 	knee = _point(landmarks, f"{side}_knee")
+	ankle = _point(landmarks, f"{side}_ankle")
+	ear = _point(landmarks, f"{side}_ear")
 	if not all((shoulder, elbow, wrist, hip, knee)):
 		return None
+	body_line_angle = (
+		calculate_angle(shoulder, hip, ankle) if ankle is not None else None
+	)
+	neck_angle = calculate_angle(ear, shoulder, hip) if ear is not None else None
 	return (
 		calculate_angle(shoulder, elbow, wrist),
 		calculate_angle(elbow, shoulder, hip),
 		calculate_angle(shoulder, hip, knee),
+		body_line_angle,
+		neck_angle,
 	)
 
 
@@ -59,4 +69,4 @@ def analyze_pose(landmarks: Dict[str, object], visibility_threshold=0.5):
 			for name in ("shoulder", "elbow", "wrist", "hip", "knee")
 		),
 	)
-	return PoseAnalysis(*angles, side)
+	return PoseAnalysis(*angles[:3], side, *angles[3:])
